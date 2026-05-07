@@ -9,13 +9,15 @@ import {
   Loader2,
   ListOrdered,
   Copy,
-  Check,
-  CheckCircle2,
-  AlertCircle
+  Check
 } from 'lucide-react';
 import api from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { getImageUrl } from '../utils/imageUrl';
+import { useToast } from '../hooks/useToast';
+import { ToastContainer } from '../components/Toast';
+import { useSocket } from '../hooks/useSocket';
+import ImageCrop from '../components/ImageCrop';
 
 interface QueueEntry {
   _id: string;
@@ -73,9 +75,9 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
   const [section, setSection] = useState<Section>('dashboard');
+  const { toasts, removeToast, showSuccess, showError } = useToast();
+  const socket = useSocket(user?.id || '', 'admin');
 
   const [entryDetails, setEntryDetails] = useState<QueueEntryDetails | null>(null);
   const [entryDetailsLoading, setEntryDetailsLoading] = useState(false);
@@ -94,6 +96,34 @@ export default function AdminDashboard() {
   const [editPhone, setEditPhone] = useState(false);
   const [editEmail, setEditEmail] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
+  const [showCropModal, setShowCropModal] = useState(false);
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setCropImageSrc(reader.result as string);
+        setShowCropModal(true);
+      };
+      reader.readAsDataURL(file);
+    }
+    setRemovePicture(false);
+  };
+
+  const handleCropComplete = (croppedBlob: Blob) => {
+    const croppedFile = new File([croppedBlob], 'cropped-profile.jpg', { type: 'image/jpeg' });
+    setSettingsPicture(croppedFile);
+    setShowCropModal(false);
+    setCropImageSrc(null);
+    showSuccess('Image cropped successfully');
+  };
+
+  const handleCropCancel = () => {
+    setShowCropModal(false);
+    setCropImageSrc(null);
+  };
 
   const syncSectionFromHash = (hash: string) => {
     if (hash.includes('users-section')) setSection('users');
@@ -121,7 +151,7 @@ export default function AdminDashboard() {
         setSelectedQueueId(q[0]._id);
       }
     } catch (err) {
-      setError('Failed to load queues');
+      showError('Failed to load queues');
     } finally {
       setLoading(false);
     }
@@ -147,7 +177,7 @@ export default function AdminDashboard() {
         setEntries(res.data.entries || []);
         setVisibleEntries(5);
       } catch (err) {
-        setError('Failed to load queue');
+        showError('Failed to load queue');
       }
     };
     void loadQueue();
@@ -168,7 +198,7 @@ export default function AdminDashboard() {
         setUsersOffset((prev) => prev + fetched.length);
       }
     } catch (err) {
-      setError('Failed to load customers');
+      showError('Failed to load customers');
     } finally {
       setUsersLoading(false);
     }
@@ -180,11 +210,27 @@ export default function AdminDashboard() {
     }
   }, [section]);
 
+  useEffect(() => {
+    if (!socket) return;
+
+    console.log('Setting up socket event listeners for admin');
+
+    socket.on('queueUpdate', () => {
+      console.log('Admin received queueUpdate event, refreshing data');
+      // Refresh queue data when users join/leave
+      void loadQueues();
+      // The selected queue will be refreshed by the existing useEffect that depends on selectedQueueId
+    });
+
+    return () => {
+      console.log('Cleaning up socket event listeners for admin');
+      socket.off('queueUpdate');
+    };
+  }, [socket]);
+
   const createQueue = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreating(true);
-    setError('');
-    setSuccess('');
     try {
       const res = await api.post('/queue/create', {
         title: queueTitle,
@@ -196,13 +242,13 @@ export default function AdminDashboard() {
       setQueueContact('');
       setQueueEmail('');
       setQueueAddress('');
-      setSuccess('Queue created');
+      showSuccess('Queue created');
       await loadQueues();
       setSelectedQueueId(res.data.queue._id);
     } catch (err) {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Failed to create queue';
-      setError(message);
+      showError(message);
     } finally {
       setCreating(false);
     }
@@ -213,11 +259,13 @@ export default function AdminDashboard() {
     setActionId('rename');
     try {
       await api.put(`/queue/${selectedQueueId}/rename`, { title: renameTitle });
-      setSuccess('Queue renamed');
+      showSuccess('Queue renamed successfully');
       setQueues(queues.map((q) => (q._id === selectedQueueId ? { ...q, title: renameTitle } : q)));
       setSelectedQueue({ ...selectedQueue!, title: renameTitle });
     } catch (err) {
-      setError('Failed to rename');
+      const message =
+        (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Failed to rename queue';
+      showError(message);
     } finally {
       setActionId(null);
     }
@@ -228,12 +276,12 @@ export default function AdminDashboard() {
     setActionId('delete');
     try {
       await api.delete(`/queue/${selectedQueueId}`);
-      setSuccess('Queue deleted');
+      showSuccess('Queue deleted');
       setSelectedQueueId(null);
       setSelectedQueue(null);
       await loadQueues();
     } catch (err) {
-      setError('Failed to delete');
+      showError('Failed to delete');
     } finally {
       setActionId(null);
     }
@@ -245,9 +293,9 @@ export default function AdminDashboard() {
     try {
       const res = await api.put(`/queue/${selectedQueueId}/next`);
       setEntries((prev) => prev.filter((e) => e._id !== res.data.next._id));
-      setSuccess(`${res.data.next.userId?.name || 'User'} called`);
+      showSuccess(`${res.data.next.userId?.name || 'User'} called`);
     } catch (err) {
-      setError('Failed to call next');
+      showError('Failed to call next');
     } finally {
       setActionId(null);
     }
@@ -258,9 +306,9 @@ export default function AdminDashboard() {
     try {
       await api.delete(`/queue/${selectedQueueId}/remove/${entryId}`);
       setEntries((prev) => prev.filter((e) => e._id !== entryId));
-      setSuccess('User removed');
+      showSuccess('User removed');
     } catch (err) {
-      setError('Failed to remove');
+      showError('Failed to remove');
     } finally {
       setActionId(null);
     }
@@ -273,7 +321,7 @@ export default function AdminDashboard() {
       const res = await api.get(`/queue/my/${selectedQueueId}/entry/${entryId}`);
       setEntryDetails(res.data.entry);
     } catch (err) {
-      setError('Failed to load user details');
+      showError('Failed to load user details');
     } finally {
       setEntryDetailsLoading(false);
     }
@@ -294,7 +342,7 @@ export default function AdminDashboard() {
       });
       setUser(res.data.user);
       localStorage.setItem('user', JSON.stringify(res.data.user));
-      setSuccess('Profile updated');
+      showSuccess('Profile updated');
       setSettingsPicture(null);
       setRemovePicture(false);
       setEditName(false);
@@ -303,7 +351,7 @@ export default function AdminDashboard() {
     } catch (err) {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Failed to update profile';
-      setError(message);
+      showError(message);
     }
   };
 
@@ -314,7 +362,7 @@ export default function AdminDashboard() {
       setCopiedField(label);
       setTimeout(() => setCopiedField(null), 1500);
     } catch {
-      setError(`Failed to copy ${label.toLowerCase()}`);
+      showError(`Failed to copy ${label.toLowerCase()}`);
     }
   };
 
@@ -322,18 +370,7 @@ export default function AdminDashboard() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="max-w-7xl mx-auto">
-      {error ? (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-red-500" />
-          <p className="text-sm text-red-600">{error}</p>
-        </div>
-      ) : null}
-      {success ? (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-green-500" />
-          <p className="text-sm text-green-600">{success}</p>
-        </div>
-      ) : null}
+      <ToastContainer toasts={toasts} removeToast={removeToast} />
 
       {(section === 'dashboard' || section === 'my-queues') && (
         <>
@@ -499,10 +536,7 @@ export default function AdminDashboard() {
                     <input
                       type="file"
                       accept="image/*"
-                      onChange={(e) => {
-                        setSettingsPicture(e.target.files?.[0] || null);
-                        setRemovePicture(false);
-                      }}
+                      onChange={handleImageSelect}
                       className="hidden"
                     />
                   </label>
@@ -632,6 +666,15 @@ export default function AdminDashboard() {
             </button>
           </div>
         </div>
+      )}
+
+      {showCropModal && cropImageSrc && (
+        <ImageCrop
+          imageSrc={cropImageSrc}
+          onCropComplete={handleCropComplete}
+          onCancel={handleCropCancel}
+          aspect={1}
+        />
       )}
     </motion.div>
   );

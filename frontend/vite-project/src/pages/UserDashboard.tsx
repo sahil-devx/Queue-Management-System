@@ -6,11 +6,16 @@ import api from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useLocation } from 'react-router-dom';
 import { getImageUrl } from '../utils/imageUrl';
+import { useToast } from '../hooks/useToast';
+import { ToastContainer } from '../components/Toast';
+import { useSocket } from '../hooks/useSocket';
+import CalledNotification from '../components/CalledNotification';
+import ImageCrop from '../components/ImageCrop';
 
 interface Queue {
   _id: string;
   title: string;
-  adminId?: { name: string };
+  adminId?: { name: string; profilePicture?: string };
   entryCount?: number;
 }
 
@@ -18,13 +23,14 @@ interface SearchQueue {
   queueId: string;
   title: string;
   adminName?: string | null;
+  adminProfilePicture?: string | null;
 }
 
 interface JoinedQueue {
   _id: string;
   joinedAt: string;
   position?: number;
-  queueId: { _id: string; title: string; adminId?: { name: string } };
+  queueId: { _id: string; title: string; adminId?: { name: string; profilePicture?: string } };
 }
 
 interface QueueDetails {
@@ -32,6 +38,7 @@ interface QueueDetails {
   title: string;
   adminName: string;
   adminEmail: string;
+  adminProfilePicture?: string;
   contact: string;
   email: string;
   address: string;
@@ -50,12 +57,11 @@ export default function UserDashboard() {
   const [joining, setJoining] = useState<string | null>(null);
   const [joinModalQueue, setJoinModalQueue] = useState<Queue | null>(null);
   const [joinName, setJoinName] = useState(user?.name || '');
-  const [joinContact, setJoinContact] = useState(user?.email || '');
+  const [joinContact, setJoinContact] = useState(user?.phone || '');
   const [joinAddress, setJoinAddress] = useState('');
   const [joinSubject, setJoinSubject] = useState('');
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
   const [details, setDetails] = useState<QueueDetails | null>(null);
+  const { toasts, removeToast, showSuccess, showError } = useToast();
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [section, setSection] = useState<'dashboard' | 'my-queues' | 'settings'>('dashboard');
   const [settingsName, setSettingsName] = useState(user?.name || '');
@@ -66,6 +72,41 @@ export default function UserDashboard() {
   const [editName, setEditName] = useState(false);
   const [editPhone, setEditPhone] = useState(false);
   const [editEmail, setEditEmail] = useState(false);
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
+  const [showCropModal, setShowCropModal] = useState(false);
+  const [calledNotification, setCalledNotification] = useState<{
+    queueTitle: string;
+    adminName: string;
+    adminEmail: string;
+  } | null>(null);
+
+  const socket = useSocket(user?.id || '', 'user');
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setCropImageSrc(reader.result as string);
+        setShowCropModal(true);
+      };
+      reader.readAsDataURL(file);
+    }
+    setRemovePicture(false);
+  };
+
+  const handleCropComplete = (croppedBlob: Blob) => {
+    const croppedFile = new File([croppedBlob], 'cropped-profile.jpg', { type: 'image/jpeg' });
+    setSettingsPicture(croppedFile);
+    setShowCropModal(false);
+    setCropImageSrc(null);
+    showSuccess('Profile picture cropped successfully');
+  };
+
+  const handleCropCancel = () => {
+    setShowCropModal(false);
+    setCropImageSrc(null);
+  };
 
   const loadData = async () => {
     try {
@@ -78,7 +119,7 @@ export default function UserDashboard() {
       setJoined(joinedRes.data.entries || []);
       setCompleted(completedRes.data.entries || []);
     } catch (err) {
-      setError('Failed to load data');
+      showError('Failed to load data');
     } finally {
     }
   };
@@ -86,6 +127,32 @@ export default function UserDashboard() {
   useEffect(() => {
     void loadData();
   }, []);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    console.log('Setting up socket event listeners for user');
+
+    socket.on('userCalled', (data: { queueTitle: string; adminName: string; adminEmail: string }) => {
+      console.log('Received userCalled event:', data);
+      // Only show one notification at a time (no duplicate toast)
+      if (!calledNotification) {
+        setCalledNotification(data);
+      }
+    });
+
+    socket.on('queueUpdate', () => {
+      console.log('Received queueUpdate event, refreshing data');
+      // Refresh queue data when there are updates
+      void loadData();
+    });
+
+    return () => {
+      console.log('Cleaning up socket event listeners for user');
+      socket.off('userCalled');
+      socket.off('queueUpdate');
+    };
+  }, [socket]);
 
   useEffect(() => {
     setSettingsName(user?.name || '');
@@ -118,21 +185,23 @@ export default function UserDashboard() {
       const normalized = (res.data.queues || []).map((q) => ({
         _id: q.queueId,
         title: q.title,
-        adminId: { name: q.adminName || 'Unknown' }
+        adminId: { 
+          name: q.adminName || 'Unknown',
+          profilePicture: q.adminProfilePicture || undefined
+        }
       }));
       setSearchResults(normalized);
     } catch (err) {
-      setError('Search failed');
+      showError('Search failed');
     }
   };
 
   const openJoinModal = (queue: Queue) => {
     setJoinModalQueue(queue);
     setJoinName(user?.name || '');
-    setJoinContact(user?.email || '');
+    setJoinContact(user?.phone || '');
     setJoinAddress('');
     setJoinSubject('');
-    setError('');
   };
 
   const closeJoinModal = () => {
@@ -141,12 +210,10 @@ export default function UserDashboard() {
 
   const joinQueue = async (queueId: string) => {
     if (!queueId) {
-      setError('Invalid queue selected');
+      showError('Invalid queue selected');
       return;
     }
     setJoining(queueId);
-    setError('');
-    setSuccess('');
     try {
       await api.post(`/queue/join/${queueId}`, {
         name: joinName.trim(),
@@ -154,13 +221,13 @@ export default function UserDashboard() {
         address: joinAddress.trim(),
         subject: joinSubject.trim()
       });
-      setSuccess('Joined queue successfully');
+      showSuccess('Joined queue successfully');
       closeJoinModal();
       await loadData();
     } catch (err) {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Failed to join queue';
-      setError(message);
+      showError(message);
     } finally {
       setJoining(null);
     }
@@ -169,24 +236,23 @@ export default function UserDashboard() {
   const leaveQueue = async (queueId: string) => {
     try {
       await api.delete(`/queue/leave/${queueId}`);
-      setSuccess('Left queue');
+      showSuccess('Left queue');
       await loadData();
     } catch (err) {
-      setError('Failed to leave');
+      showError('Failed to leave');
     }
   };
 
   const openDetails = async (queueId: string) => {
     if (!queueId) return;
     setDetailsLoading(true);
-    setError('');
     try {
       const res = await api.get<{ queue: QueueDetails }>(`/queue/details/${queueId}`);
       setDetails(res.data.queue);
     } catch (err) {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Failed to load details';
-      setError(message);
+      showError(message);
     } finally {
       setDetailsLoading(false);
     }
@@ -201,7 +267,7 @@ export default function UserDashboard() {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ||
         'Failed to remove completed queue';
-      setError(message);
+      showError(message);
     }
   };
 
@@ -219,7 +285,7 @@ export default function UserDashboard() {
       });
       setUser(res.data.user);
       localStorage.setItem('user', JSON.stringify(res.data.user));
-      setSuccess('Profile updated');
+      showSuccess('Profile updated');
       setSettingsPicture(null);
       setRemovePicture(false);
       setEditName(false);
@@ -228,7 +294,7 @@ export default function UserDashboard() {
     } catch (err) {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Failed to update profile';
-      setError(message);
+      showError(message);
     }
   };
 
@@ -270,25 +336,7 @@ export default function UserDashboard() {
         </div>
       )}
 
-      {/* Messages */}
-      {error && (
-        <motion.div 
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-4 p-3 bg-red-50 text-red-600 rounded-lg"
-        >
-          {error}
-        </motion.div>
-      )}
-      {success && (
-        <motion.div 
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-4 p-3 bg-green-50 text-green-600 rounded-lg"
-        >
-          {success}
-        </motion.div>
-      )}
+      <ToastContainer toasts={toasts} removeToast={removeToast} />
 
       {(section === 'dashboard' || section === 'my-queues') && (
         <>
@@ -338,23 +386,32 @@ export default function UserDashboard() {
                 transition={{ delay: idx * 0.05 }}
                 className="flex justify-between items-center p-4 border rounded-lg"
               >
-                <div>
-                  <p className="font-medium">{queue.title}</p>
-                  <p className="text-sm text-slate-500">Admin: {queue.adminId?.name || 'Unknown'}</p>
+                <div className="flex items-center gap-3">
+                  <img 
+                    src={getImageUrl(queue.adminId?.profilePicture)} 
+                    alt={queue.adminId?.name || 'Admin'} 
+                    className="w-10 h-10 rounded-full object-cover border border-slate-200"
+                  />
+                  <div>
+                    <p className="font-medium">{queue.title}</p>
+                    <p className="text-sm text-slate-500">Admin: {queue.adminId?.name || 'Unknown'}</p>
+                  </div>
                 </div>
-                <button
-                  onClick={() => openJoinModal(queue)}
-                  disabled={joinedIds.has(queue._id) || joining === queue._id}
-                  className="px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50"
-                >
-                  {joining === queue._id ? <Loader2 className="w-4 h-4 animate-spin" /> : joinedIds.has(queue._id) ? 'Joined' : 'Join'}
-                </button>
-                <button
-                  onClick={() => void openDetails(queue._id)}
-                  className="ml-2 px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50"
-                >
-                  Details
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => openJoinModal(queue)}
+                    disabled={joinedIds.has(queue._id) || joining === queue._id}
+                    className="px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    {joining === queue._id ? <Loader2 className="w-4 h-4 animate-spin" /> : joinedIds.has(queue._id) ? 'Joined' : 'Join'}
+                  </button>
+                  <button
+                    onClick={() => void openDetails(queue._id)}
+                    className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50"
+                  >
+                    Details
+                  </button>
+                </div>
               </motion.div>
             ))}
           </div>
@@ -382,23 +439,33 @@ export default function UserDashboard() {
                 transition={{ delay: idx * 0.05 }}
                 className="flex justify-between items-center p-4 border rounded-lg"
               >
-                <div>
-                  <p className="font-medium">{entry.queueId?.title}</p>
-                  <p className="text-sm text-slate-500">Position: #{entry.position || '-'}</p>
-                  <p className="text-xs text-slate-400 mt-1">Joined: {new Date(entry.joinedAt).toLocaleDateString()}</p>
+                <div className="flex items-center gap-3 flex-1">
+                  <img 
+                    src={getImageUrl(entry.queueId?.adminId?.profilePicture)} 
+                    alt={entry.queueId?.adminId?.name || 'Admin'} 
+                    className="w-10 h-10 rounded-full object-cover border border-slate-200"
+                  />
+                  <div>
+                    <p className="font-medium">{entry.queueId?.title}</p>
+                    <p className="text-sm text-slate-500">Admin: {entry.queueId?.adminId?.name || 'Unknown'}</p>
+                    <p className="text-sm text-slate-500">Position: #{entry.position || '-'}</p>
+                    <p className="text-xs text-slate-400 mt-1">Joined: {new Date(entry.joinedAt).toLocaleDateString()}</p>
+                  </div>
                 </div>
-                <button
-                  onClick={() => leaveQueue(entry.queueId?._id)}
-                  className="px-3 py-1 text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
-                >
-                  Leave
-                </button>
-                <button
-                  onClick={() => void openDetails(entry.queueId?._id)}
-                  className="ml-2 px-3 py-1 text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50"
-                >
-                  Details
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => leaveQueue(entry.queueId?._id)}
+                    className="px-3 py-1 text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+                  >
+                    Leave
+                  </button>
+                  <button
+                    onClick={() => void openDetails(entry.queueId?._id)}
+                    className="px-3 py-1 text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50"
+                  >
+                    Details
+                  </button>
+                </div>
               </motion.div>
             ))}
           </div>
@@ -425,9 +492,16 @@ export default function UserDashboard() {
                 transition={{ delay: idx * 0.05 }}
                 className="p-4 border rounded-lg bg-slate-50 flex items-start justify-between gap-3"
               >
-                <div>
-                  <p className="font-medium">{entry.queueId?.title}</p>
-                  <p className="text-sm text-slate-500">Admin: {entry.queueId?.adminId?.name || 'Unknown'}</p>
+                <div className="flex items-center gap-3 flex-1">
+                  <img 
+                    src={getImageUrl(entry.queueId?.adminId?.profilePicture)} 
+                    alt={entry.queueId?.adminId?.name || 'Admin'} 
+                    className="w-10 h-10 rounded-full object-cover border border-slate-200"
+                  />
+                  <div>
+                    <p className="font-medium">{entry.queueId?.title}</p>
+                    <p className="text-sm text-slate-500">Admin: {entry.queueId?.adminId?.name || 'Unknown'}</p>
+                  </div>
                 </div>
                 <button
                   onClick={() => void removeCompleted(entry._id)}
@@ -459,10 +533,7 @@ export default function UserDashboard() {
                     <input
                       type="file"
                       accept="image/*"
-                      onChange={(e) => {
-                        setSettingsPicture(e.target.files?.[0] || null);
-                        setRemovePicture(false);
-                      }}
+                      onChange={handleImageSelect}
                       className="hidden"
                     />
                   </label>
@@ -636,6 +707,24 @@ export default function UserDashboard() {
             </form>
           </div>
         </div>
+      )}
+
+      {showCropModal && cropImageSrc && (
+        <ImageCrop
+          imageSrc={cropImageSrc}
+          onCropComplete={handleCropComplete}
+          onCancel={handleCropCancel}
+          aspect={1}
+        />
+      )}
+
+      {calledNotification && (
+        <CalledNotification
+          queueTitle={calledNotification.queueTitle}
+          adminName={calledNotification.adminName}
+          adminEmail={calledNotification.adminEmail}
+          onClose={() => setCalledNotification(null)}
+        />
       )}
     </motion.div>
   );

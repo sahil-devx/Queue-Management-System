@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { useAuth } from '../context/AuthContext';
 import { User, Mail, Lock, UserPlus, ShieldCheck, KeyRound, Crown } from 'lucide-react';
 import api from '../api/client';
 
@@ -18,6 +19,7 @@ export default function Register() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const { register } = useAuth();
   const navigate = useNavigate();
 
   const submitDetails = async (e: React.FormEvent) => {
