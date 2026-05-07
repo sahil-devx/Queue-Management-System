@@ -9,7 +9,7 @@ function normalizeAdminEmail(value) {
   if (value == null || value === '') return '';
   return String(value).trim().replace(/\r$/, '').toLowerCase();
 }
-
+                                                        //Otpgen   login  registration  Token
 function signToken(user) {
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error('Missing required env var: JWT_SECRET');

@@ -15,4 +15,3 @@ queueSchema.index({ adminId: 1, createdAt: -1 });
 queueSchema.index({ title: 1 });
 
 module.exports = mongoose.model('Queue', queueSchema);
-
